@@ -6,6 +6,20 @@ using Profile
 using ProtoBuf
 using OrderedCollections
 
+# Load in `deps.jl`, complaining if it does not exist
+const depsjl_path = joinpath(@__DIR__, "..", "deps", "deps.jl")
+if !isfile(depsjl_path)
+    error("PProf not installed properly, run Pkg.build(\"PProf\"), restart Julia and try again")
+end
+include(depsjl_path)
+
+# Module initialization function
+function __init__()
+    # Always check your dependencies from `deps.jl`
+    check_deps()
+end
+
+
 include(joinpath("..", "lib", "perftools.jl"))
 
 import .perftools.profiles: ValueType, Sample, Function,
@@ -13,16 +27,19 @@ import .perftools.profiles: ValueType, Sample, Function,
 const PProfile = perftools.profiles.Profile
 
 """
-    _enter!(dict::OrderedDict{T, Int}, key::T) where T
+    _enter!(dict::OrderedDict{T, Int64}, key::T) where T
 
 Resolves from `key` to the index (zero-based) in the dict.
 Useful for the Strings table
+
+NOTE: We must use Int64 throughout this package (regardless of system word-size) b/c the
+proto file specifies 64-bit integers.
 """
-function _enter!(dict::OrderedDict{T, Int}, key::T) where T
+function _enter!(dict::OrderedDict{T, Int64}, key::T) where T
     if haskey(dict, key)
         return dict[key]
     else
-        l = length(dict)
+        l = Int64(length(dict))
         dict[key] = l
         return l
     end
@@ -34,7 +51,9 @@ using Base.StackTraces: lookup, StackFrame
 # - Mappings
 
 """
-    pprof(data, period; out = "profile.pb.gz", from_c = true, drop_frames = "", keep_frames = "")
+    pprof(data, period;
+            web = true, webhost = "localhost", webport = 57599,
+            out = "profile.pb.gz", from_c = true, drop_frames = "", keep_frames = "")
 
 Fetches and converts `Profile` data to the `pprof` format.
 
@@ -43,6 +62,9 @@ Fetches and converts `Profile` data to the `pprof` format.
 - `period::UInt64`: The sampling period in nanoseconds [optional].
 
 # Keyword Arguments
+- `web::Bool`: Whether to launch the `go tool pprof` interactive webserver for viewing results.
+- `webhost::AbstractString`: If using `web`, which host to launch the webserver on.
+- `webport::Integer`: If using `web`, which port to launch the webserver on.
 - `out::String`: Filename for output.
 - `from_c::Bool`: If `false`, exclude frames that come from from_c. Defaults to `true`.
 - `drop_frames`: frames with function_name fully matching regexp string will be dropped from the samples,
@@ -51,6 +73,9 @@ Fetches and converts `Profile` data to the `pprof` format.
 """
 function pprof(data::Union{Nothing, Vector{UInt}} = nothing,
                period::Union{Nothing, UInt64} = nothing;
+               web::Bool = true,
+               webhost::AbstractString = "localhost",
+               webport::Integer = 57599,
                out::AbstractString = "profile.pb.gz",
                from_c::Bool = true,
                drop_frames::Union{Nothing, AbstractString} = nothing,
@@ -62,7 +87,7 @@ function pprof(data::Union{Nothing, Vector{UInt}} = nothing,
         period = ccall(:jl_profile_delay_nsec, UInt64, ())
     end
 
-    string_table = OrderedDict{AbstractString, Int}()
+    string_table = OrderedDict{AbstractString, Int64}()
     enter!(string) = _enter!(string_table, string)
     enter!(::Nothing) = _enter!(string_table, "nothing")
     ValueType!(_type, unit) = ValueType(_type = enter!(_type), unit = enter!(unit))
@@ -192,6 +217,7 @@ function pprof(data::Union{Nothing, Vector{UInt}} = nothing,
         writeproto(io, prof)
     end
 
+    if web run(`$go_pprof -http=$webhost:$webport $out`) end
     out
 end
 
